@@ -17,16 +17,26 @@ byte                   WS_PORT = 81;
 std::unique_ptr        <WebSocketsServer> wsServer;
 
 uint8_t                wifi_status = 0;
+uint8_t                wifi_dns = 0;
 uint8_t                wifi_mode = 0;
 unsigned long          wifi_start = 0; 
 long                   wifi_timeout = 0;
-uint8_t                wifi_channel = 11;
 
+uint8_t                wifi_channel = 11;
 String                 wifi_name = "led_" + String(ESP.getChipId()).substring(4);
 String                 wifi_ssid = "";
 String                 wifi_password = "";
 
-
+bool                   channel_1  = false;
+uint8_t                channel_1_high = 0;
+bool                   channel_6  = false;
+uint8_t                channel_6_high = 0;
+bool                   channel_11 = false;
+uint8_t                channel_11_high = 0;
+uint8_t                channel_open = 0;
+uint8_t                channel_weakest = 0;
+bool                   scanning = false;
+  
 bool loadConfig() {
    char input[32];
    File configFile = SPIFFS.open("/config.json", "r");
@@ -54,6 +64,8 @@ bool loadConfig() {
    
    strcpy(input, json["wifi_name"]);
    wifi_name = String(input);
+   strcpy(input, json["wifi_channel"]);
+   wifi_channel = String(input).toInt();
    strcpy(input, json["wifi_ssid"]);
    wifi_ssid = String(input);
    strcpy(input, json["wifi_password"]);
@@ -67,6 +79,7 @@ bool saveConfig() {
    JsonObject& json = jsonBuffer.createObject();
 
    json["wifi_name"] = wifi_name;
+   json["wifi_channel"] = wifi_channel;
    json["wifi_ssid"] = wifi_ssid;
    json["wifi_password"] = wifi_password;
 
@@ -99,13 +112,74 @@ void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t lenght
       case WStype_CONNECTED: {
          IPAddress ip = wsServer->remoteIP(num);
          //USE_SERIAL.printf("[%u] Connected from %d.%d.%d.%d url: %s\n", num, ip[0], ip[1], ip[2], ip[3], payload);
-
+	       String Send = String("1"+ wifi_name);
+         //wsServer->sendTXT(num, String("1" + wifi_name));
+	       wsServer->sendTXT(num, Send);
+	       Send = String("2"+ wifi_ssid);
+         //wsServer->sendTXT(num, String("2" + wifi_ssid));
+         //wsServer->sendTXT(num, String("3" + wifi_password));
+	       wsServer->sendTXT(num, Send);
+	       Send = String("3"+ wifi_password);
+         wsServer->sendTXT(num, Send);
+         Send = String("4"+ wifi_channel);
+         wsServer->sendTXT(num, Send);
       }
       break;
 
       case WStype_TEXT: { 
          //USE_SERIAL.printf("[%u] get Text: %s\n", num, payload);
          char PayLoad[lenght];
+         String Chan;
+         if(payload[0] == '1') {
+            // wifi_name
+            for(int i=0; i < lenght -1; i++) {
+               PayLoad[i] = payload[i+1];
+            }
+            PayLoad[lenght - 1] = '\0';
+            wifi_name = PayLoad;
+            //USE_SERIAL.println(wifi_name);
+         }
+      
+         if(payload[0] == '2') {
+            // wifi_ssid
+            for(int i=0; i < lenght -1; i++) {
+               PayLoad[i] = payload[i+1];
+            }
+            PayLoad[lenght - 1] = '\0';
+            wifi_ssid = PayLoad;
+            //USE_SERIAL.println(wifi_ssid);
+         }  
+               
+         if(payload[0] == '3') {
+            // wifi_password
+            for(int i=0; i < lenght -1; i++) {
+               PayLoad[i] = payload[i+1];
+            }
+            PayLoad[lenght - 1] = '\0';
+            wifi_password = PayLoad;
+            //USE_SERIAL.println(wifi_password);
+         }               
+               
+         if(payload[0] == '4') {
+            // wifi_password
+            for(int i=0; i < lenght -1; i++) {
+               PayLoad[i] = payload[i+1];
+            }
+            PayLoad[lenght - 1] = '\0';
+            Chan = PayLoad;
+            wifi_channel = Chan.toInt();
+            //USE_SERIAL.println(wifi_channel);
+         }               
+
+         if(payload[0] == 'U') {
+            // update
+            if(saveConfig()) {
+               USE_SERIAL.println("Config file saved ... restarting");
+               soft_reset();
+            } else {
+               USE_SERIAL.println("Config file save failed");
+            }
+         }
       }
       break;
    }
@@ -213,10 +287,12 @@ void handleNotFound() {
 }
 
 void wifi_loop() {
+  
    if(wifi_status != 3) {
       unsigned long currentMillis = millis();
       if(wifi_status == 4)
          return; // wifi disabled
+         
       if(wifi_status == 0) { // try the default sta mode first
          USE_SERIAL.println("Station connecting ...");
          wifi_status = 1;
@@ -229,16 +305,133 @@ void wifi_loop() {
             } else {
                WiFi.begin(wifi_ssid.c_str());
             }
-          } else {
+         } else {
             WiFi.begin();
+         }
+         return;
       }
-      return;
-   }
-   if(wifi_status == 1) { // check default sta status ...
-      if(WiFi.status() != WL_CONNECTED) {
-         if(currentMillis - wifi_start >= wifi_timeout) { // default sta connection timed out ... start default ap mode
-            USE_SERIAL.println("Station timed out");
-            wifi_status = 2;
+   
+      if(wifi_status == 1) { // check default sta status ...
+         if(WiFi.status() != WL_CONNECTED) {
+            if(currentMillis - wifi_start >= wifi_timeout) { // default sta connection timed out ... start default ap mode
+               USE_SERIAL.println("Station timed out");
+               //WiFi.mode(WIFI_STA);
+               WiFi.disconnect();
+               delay(100);
+               wifi_status = 2; 
+               scanning = true;
+               WiFi.scanNetworks(true, true);
+               Serial.println("scan started");
+               return;
+            } else {
+              return; // tic-toc
+            }
+         } else { // sta is connected 
+            // print your WiFi IP address:
+            IPAddress ip = WiFi.localIP();
+            USE_SERIAL.print("IP Address: ");
+            USE_SERIAL.println(ip);
+
+            webServer.reset(new ESP8266WebServer(WEB_PORT));
+            webServer->onNotFound(handleNotFound);
+            webServer->begin();
+            USE_SERIAL.println("HTTP server started");
+        
+            wsServer.reset(new WebSocketsServer(WS_PORT));
+            wsServer->begin();
+            USE_SERIAL.println("WebSocket server started");
+            wsServer->onEvent(webSocketEvent);
+       
+            if(MDNS.begin(wifi_name.c_str())) {
+               USE_SERIAL.println("MDNS responder started");
+               MDNS.addService("http", "tcp", WEB_PORT);
+               MDNS.addService("ws", "tcp", WS_PORT);
+            } else {
+               USE_SERIAL.println("MDNS responder failed");
+            }
+            wifi_dns = 1;
+            wifi_status = 3;
+            return;
+         }
+      }
+
+      if(wifi_status == 2) { // AP mode
+         if(scanning) {
+            int n = WiFi.scanComplete();
+            if(n == -1) {
+               return; // still scanning
+            }
+            if(n == -2) {
+               scanning = false; // problem ... reset fixme
+               Serial.println("scan failed");
+               wifi_status = 4;
+               WiFi.mode(WIFI_OFF);
+               return;
+            }
+            Serial.println("scan done");
+            scanning = false;
+            if(n == 0) {
+               channel_open = 1; // no networks found use channel 1
+            } else {
+               for (int i = 0; i < n; ++i) {
+                  if(WiFi.channel(i) == 1) {
+                     channel_1 = true;
+                     if( (abs(WiFi.RSSI(i)) < channel_1_high) || channel_1_high == 0) {
+                        channel_1_high = abs(WiFi.RSSI(i));
+                     }
+                  }
+
+                  if(WiFi.channel(i) == 6) {
+                     channel_6 = true;
+                     if( (abs(WiFi.RSSI(i)) < channel_6_high) || channel_6_high == 0) {
+                        channel_6_high = abs(WiFi.RSSI(i));
+                     }
+                  }
+      
+                  if(WiFi.channel(i) == 11) {
+                     channel_11 = true;
+                     if( (abs(WiFi.RSSI(i)) < channel_11_high) || channel_11_high == 0) {
+                        channel_11_high = abs(WiFi.RSSI(i));
+                     }
+                  }
+               }
+            }
+  
+            if(!channel_11) {
+               channel_open = 11;
+            }
+    
+            if(!channel_6) {
+               channel_open = 6;
+            }
+        
+            if(!channel_1) {
+               channel_open = 1;
+            }
+
+            if(channel_open == 0) {
+               Serial.print("Using weakest channel: ");
+    
+               if(channel_1_high > channel_6_high && channel_1_high > channel_11_high) {
+                  channel_weakest = 1;
+               } 
+    
+               if(channel_6_high > channel_1_high && channel_6_high > channel_11_high) {
+                  channel_weakest = 6;
+               } 
+    
+               if(channel_11_high > channel_6_high && channel_11_high > channel_1_high) {
+                  channel_weakest = 11;
+               }
+            
+               Serial.println(channel_weakest);
+               wifi_channel = channel_weakest;
+            } else {
+               Serial.print("Using open channel: ");
+               Serial.println(channel_open);
+               wifi_channel = channel_open;
+            } // channel set
+            
             wifi_name = "led_" + String(ESP.getChipId()).substring(4);
             wifi_ssid = wifi_name;
             wifi_password = "";
@@ -296,38 +489,8 @@ void wifi_loop() {
                USE_SERIAL.println("MDNS responder failed");
             }
             return;
-            } else {
-              return; // tic-toc
-            }
-         } else { // sta is connected 
-            // print your WiFi IP address:
-            IPAddress ip = WiFi.localIP();
-            USE_SERIAL.print("IP Address: ");
-            USE_SERIAL.println(ip);
+         } 
 
-            webServer.reset(new ESP8266WebServer(WEB_PORT));
-            webServer->onNotFound(handleNotFound);
-            webServer->begin();
-            USE_SERIAL.println("HTTP server started");
-        
-            wsServer.reset(new WebSocketsServer(WS_PORT));
-            wsServer->begin();
-            USE_SERIAL.println("WebSocket server started");
-            wsServer->onEvent(webSocketEvent);
-       
-            if(MDNS.begin(wifi_name.c_str())) {
-               USE_SERIAL.println("MDNS responder started");
-               MDNS.addService("http", "tcp", WEB_PORT);
-               MDNS.addService("ws", "tcp", WS_PORT);
-            } else {
-               USE_SERIAL.println("MDNS responder failed");
-            }
-            wifi_mode = 1;
-            wifi_status = 3;
-            return;
-         }
-      }
-      if(wifi_status == 2) { // AP mode
          if(WiFi.softAPgetStationNum() == 0) { // no connections to AP
             if(currentMillis - wifi_start >= wifi_timeout) { // AP connection timed out 
                USE_SERIAL.println("AP timed out "); // AP timed out ... shutdown wifi
@@ -341,7 +504,7 @@ void wifi_loop() {
       }
       return;
    } // wifi is connected ...
-   if(wifi_mode != 1) 
+   if(wifi_dns != 1) 
       dnsServer->processNextRequest();
    webServer->handleClient();
    wsServer->loop();
@@ -352,12 +515,6 @@ void loop() {
    wifi_loop();
    //yield();
 }
-
-
-
-
-
-
 
 
 
