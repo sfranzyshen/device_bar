@@ -23,7 +23,7 @@ unsigned long          wifi_start = 0;
 long                   wifi_timeout = 0;
 
 uint8_t                wifi_channel = 11;
-String                 wifi_name = "led_" + String(ESP.getChipId()).substring(4);
+String                 wifi_name = "LED_" + String(ESP.getChipId()).substring(4);
 String                 wifi_ssid = "";
 String                 wifi_password = "";
 
@@ -432,7 +432,7 @@ void wifi_loop() {
                wifi_channel = channel_open;
             } // channel set
             
-            wifi_name = "led_" + String(ESP.getChipId()).substring(4);
+            wifi_name = "LED_" + String(ESP.getChipId()).substring(4);
             wifi_ssid = wifi_name;
             wifi_password = "";
             wifi_start = millis();
